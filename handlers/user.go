@@ -21,7 +21,10 @@ func (h *UserHandler) Profile(c *gin.Context) {
 
 	var user models.User
 	if err := h.db.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":      "user not found",
+			"request_id": c.GetString("requestID"),
+		})
 		return
 	}
 
@@ -31,7 +34,10 @@ func (h *UserHandler) Profile(c *gin.Context) {
 func (h *UserHandler) GetAllUsers(c *gin.Context) {
 	var users []models.User
 	if err := h.db.Find(&users).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch users"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "failed to fetch users",
+			"request_id": c.GetString("requestID"),
+		})
 		return
 	}
 

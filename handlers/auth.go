@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/AshrafAhmed9/assignment-golang/config"
 	"github.com/AshrafAhmed9/assignment-golang/models"
 	"github.com/AshrafAhmed9/assignment-golang/utils"
 	"github.com/gin-gonic/gin"
@@ -12,11 +13,12 @@ import (
 )
 
 type AuthHandler struct {
-	db *gorm.DB
+	db  *gorm.DB
+	cfg *config.Config
 }
 
-func NewAuthHandler(db *gorm.DB) *AuthHandler {
-	return &AuthHandler{db: db}
+func NewAuthHandler(db *gorm.DB, cfg *config.Config) *AuthHandler {
+	return &AuthHandler{db: db, cfg: cfg}
 }
 
 type SignupRequest struct {
@@ -33,22 +35,22 @@ type LoginRequest struct {
 func (h *AuthHandler) Signup(c *gin.Context) {
 	var req SignupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "request_id": c.GetString("requestID")})
 		return
 	}
 
 	if req.Name == "" || req.Email == "" || req.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name, email and password are required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name, email and password are required", "request_id": c.GetString("requestID")})
 		return
 	}
 
 	if !strings.Contains(req.Email, "@") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email", "request_id": c.GetString("requestID")})
 		return
 	}
 
-	if len(req.Password) < 6 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
+	if len(req.Password) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 8 characters", "request_id": c.GetString("requestID")})
 		return
 	}
 
@@ -57,13 +59,13 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 
 	var existing models.User
 	if err := h.db.Where("email = ?", req.Email).First(&existing).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+		c.JSON(http.StatusConflict, gin.H{"error": "email already registered", "request_id": c.GetString("requestID")})
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), h.cfg.BcryptCost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password", "request_id": c.GetString("requestID")})
 		return
 	}
 
@@ -75,7 +77,7 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 	}
 
 	if err := h.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user", "request_id": c.GetString("requestID")})
 		return
 	}
 
@@ -85,12 +87,12 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "request_id": c.GetString("requestID")})
 		return
 	}
 
 	if req.Email == "" || req.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email and password are required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email and password are required", "request_id": c.GetString("requestID")})
 		return
 	}
 
@@ -98,18 +100,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	var user models.User
 	if err := h.db.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials", "request_id": c.GetString("requestID")})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials", "request_id": c.GetString("requestID")})
 		return
 	}
 
-	token, err := utils.GenerateToken(user.ID, user.Email, user.Role)
+	token, err := utils.GenerateToken(user.ID, user.Email, user.Role, h.cfg.JWTSecret, h.cfg.TokenExpiry)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token", "request_id": c.GetString("requestID")})
 		return
 	}
 
