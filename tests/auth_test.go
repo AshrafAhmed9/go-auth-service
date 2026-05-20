@@ -47,7 +47,7 @@ func TestSignup_Success(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -73,7 +73,7 @@ func TestSignup_DuplicateEmail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -90,7 +90,7 @@ func TestSignup_InvalidEmail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -106,7 +106,7 @@ func TestSignup_ShortPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -122,7 +122,7 @@ func TestSignup_RoleEscalationBlocked(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -145,7 +145,7 @@ func TestLogin_Success(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -170,7 +170,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/signup", h.Signup)
@@ -188,7 +188,7 @@ func TestLogin_UserNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB()
 	cfg := setupTestConfig()
-	h := handlers.NewAuthHandler(db, cfg)
+	h := handlers.NewAuthHandler(db, cfg, nil)
 
 	r := gin.New()
 	r.POST("/login", h.Login)
