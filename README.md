@@ -55,6 +55,7 @@ POST /login
 | Password leakage | bcrypt hashing + json:"-" tag (never serialized) |
 | Weak JWT secret | Startup panic if secret < 32 characters |
 | Container privilege | Docker runs as non-root appuser |
+| Token revocation | Redis blacklist with TTL matching token expiry — auto-expires, zero cleanup needed |
 
 ## Threat Model
 
@@ -70,6 +71,7 @@ POST /login
 | POST | /signup | No | - | Register a new user |
 | POST | /login | No | - | Login and receive JWT |
 | GET | /profile | JWT | any | Get own profile |
+| POST | /logout | JWT | any | Revoke current token |
 | GET | /users | JWT | admin | List all users |
 | GET | /health | No | - | Service health check |
 
@@ -161,7 +163,6 @@ docker compose up --build
 
 ## Limitations
 
-- **No token revocation** — JWTs remain valid until expiry; no blacklist or revocation store is implemented
 - **No refresh tokens** — chosen for simplicity and statelessness; production systems pair access tokens with refresh tokens for session continuity
 - **JWT secret rotation** — not implemented; production systems would use managed secret stores with rotation policies
 - **SQLite concurrency** — not optimized for high-concurrency writes; replace with PostgreSQL for production
