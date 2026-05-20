@@ -14,6 +14,7 @@ type Config struct {
 	Port        string
 	BcryptCost  int
 	TokenExpiry time.Duration
+	RedisAddr   string
 }
 
 func Load() *Config {
@@ -43,10 +44,16 @@ func Load() *Config {
 		}
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
 	return &Config{
 		JWTSecret:   secret,
 		Port:        os.Getenv("PORT"),
 		BcryptCost:  cost,
 		TokenExpiry: expiry,
+		RedisAddr:   redisAddr,
 	}
 }

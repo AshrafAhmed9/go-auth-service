@@ -3,7 +3,9 @@ package handlers
 import (
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/AshrafAhmed9/assignment-golang/cache"
 	"github.com/AshrafAhmed9/assignment-golang/config"
 	"github.com/AshrafAhmed9/assignment-golang/models"
 	"github.com/AshrafAhmed9/assignment-golang/utils"
@@ -13,12 +15,13 @@ import (
 )
 
 type AuthHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db    *gorm.DB
+	cfg   *config.Config
+	cache *cache.RedisClient
 }
 
-func NewAuthHandler(db *gorm.DB, cfg *config.Config) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg}
+func NewAuthHandler(db *gorm.DB, cfg *config.Config, rdb *cache.RedisClient) *AuthHandler {
+	return &AuthHandler{db: db, cfg: cfg, cache: rdb}
 }
 
 type SignupRequest struct {
@@ -116,4 +119,42 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token})
+}
+
+func (h *AuthHandler) Logout(c *gin.Context) {
+	tokenString := c.GetString("token")
+	if tokenString == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "no token found",
+			"request_id": c.GetString("requestID"),
+		})
+		return
+	}
+
+	claims, err := utils.ParseToken(tokenString, h.cfg.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":      "invalid token",
+			"request_id": c.GetString("requestID"),
+		})
+		return
+	}
+
+	ttl := time.Until(claims.ExpiresAt.Time)
+	if ttl <= 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "token already expired"})
+		return
+	}
+
+	if h.cache != nil {
+		if err := h.cache.Blacklist(tokenString, ttl); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":      "failed to revoke token",
+				"request_id": c.GetString("requestID"),
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
 }

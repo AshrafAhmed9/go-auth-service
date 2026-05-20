@@ -5,9 +5,16 @@ import (
 	"os"
 	"strings"
 
+	"github.com/AshrafAhmed9/assignment-golang/cache"
 	"github.com/AshrafAhmed9/assignment-golang/utils"
 	"github.com/gin-gonic/gin"
 )
+
+var redisClient *cache.RedisClient
+
+func SetRedisClient(r *cache.RedisClient) {
+	redisClient = r
+}
 
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -23,6 +30,15 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
+		if redisClient != nil && redisClient.IsBlacklisted(tokenString) {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":      "token has been revoked",
+				"request_id": c.GetString("requestID"),
+			})
+			c.Abort()
+			return
+		}
+
 		claims, err := utils.ParseToken(tokenString, os.Getenv("JWT_SECRET"))
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -36,6 +52,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		c.Set("userID", claims.UserID)
 		c.Set("email", claims.Email)
 		c.Set("role", claims.Role)
+		c.Set("token", tokenString)
 
 		c.Next()
 	}

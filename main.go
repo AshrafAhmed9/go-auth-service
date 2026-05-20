@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AshrafAhmed9/assignment-golang/cache"
 	"github.com/AshrafAhmed9/assignment-golang/config"
 	"github.com/AshrafAhmed9/assignment-golang/database"
 	"github.com/AshrafAhmed9/assignment-golang/handlers"
@@ -21,7 +22,10 @@ func main() {
 	cfg := config.Load()
 	db := database.Connect(cfg.BcryptCost)
 
-	authHandler := handlers.NewAuthHandler(db, cfg)
+	rdb := cache.NewRedisClient(cfg.RedisAddr)
+	middleware.SetRedisClient(rdb)
+
+	authHandler := handlers.NewAuthHandler(db, cfg, rdb)
 	userHandler := handlers.NewUserHandler(db)
 	healthHandler := handlers.NewHealthHandler(db)
 
@@ -49,6 +53,7 @@ func main() {
 	protected.Use(middleware.JWTAuthMiddleware())
 	{
 		protected.GET("/profile", userHandler.Profile)
+		protected.POST("/logout", authHandler.Logout)
 
 		admin := protected.Group("/")
 		admin.Use(middleware.AdminOnlyMiddleware())
