@@ -1,8 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_USER: authuser
+      POSTGRES_PASSWORD: authpass
+      POSTGRES_DB: authdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6381:6379"
     restart: unless-stopped
 
   api:
@@ -11,9 +23,13 @@ services:
       - "8080:8080"
     env_file:
       - .env
-    volumes:
-      - ./data:/app/data
     depends_on:
+      - postgres
       - redis
     environment:
       - REDIS_ADDR=redis:6379
+      - DB_DRIVER=postgres
+      - DATABASE_URL=postgres://authuser:authpass@postgres:5432/authdb?sslmode=disable
+
+volumes:
+  pgdata:

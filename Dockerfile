@@ -9,6 +9,7 @@ FROM alpine:latest
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 COPY --from=builder /app/app .
+COPY --from=builder /app/migrations ./migrations
 RUN mkdir -p data
 USER appuser
 EXPOSE 8080

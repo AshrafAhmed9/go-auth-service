@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,14 +14,16 @@ import (
 	"github.com/AshrafAhmed9/assignment-golang/cache"
 	"github.com/AshrafAhmed9/assignment-golang/config"
 	"github.com/AshrafAhmed9/assignment-golang/database"
+	"github.com/AshrafAhmed9/assignment-golang/grpcserver"
 	"github.com/AshrafAhmed9/assignment-golang/handlers"
 	"github.com/AshrafAhmed9/assignment-golang/middleware"
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc"
 )
 
 func main() {
 	cfg := config.Load()
-	db := database.Connect(cfg.BcryptCost)
+	db := database.Connect(cfg.DBDriver, cfg.DatabaseURL, cfg.BcryptCost)
 
 	rdb := cache.NewRedisClient(cfg.RedisAddr)
 	middleware.SetRedisClient(rdb)
@@ -47,10 +50,12 @@ func main() {
 
 	r.GET("/health", healthHandler.Health)
 	r.POST("/signup", authHandler.Signup)
-	r.POST("/login", middleware.RateLimitMiddleware(), authHandler.Login)
+	r.POST("/login", middleware.RateLimitMiddleware(rdb, cfg.RateLimitRequests, cfg.RateLimitWindow), authHandler.Login)
+	r.POST("/refresh", authHandler.Refresh)
 
 	protected := r.Group("/")
 	protected.Use(middleware.JWTAuthMiddleware())
+	protected.Use(middleware.PerUserRateLimitMiddleware(rdb, cfg.PerUserLimitRequests, cfg.PerUserLimitWindow))
 	{
 		protected.GET("/profile", userHandler.Profile)
 		protected.POST("/logout", authHandler.Logout)
@@ -78,13 +83,28 @@ func main() {
 
 	slog.Info("server started", "port", cfg.Port)
 
+	grpcSrv := grpc.NewServer()
+	grpcserver.RegisterServer(grpcSrv, cfg.JWTSecret, rdb)
+
+	go func() {
+		lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
+		if err != nil {
+			log.Fatal("failed to listen for gRPC:", err)
+		}
+		slog.Info("gRPC server started", "port", cfg.GRPCPort)
+		if err := grpcSrv.Serve(lis); err != nil {
+			log.Fatal("gRPC server error:", err)
+		}
+	}()
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	slog.Info("shutting down server...")
+	slog.Info("shutting down servers...")
+	grpcSrv.GracefulStop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
-	slog.Info("server stopped")
+	slog.Info("servers stopped")
 }

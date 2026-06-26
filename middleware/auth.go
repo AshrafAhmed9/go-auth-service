@@ -30,19 +30,19 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
-		if redisClient != nil && redisClient.IsBlacklisted(tokenString) {
+		claims, err := utils.ParseToken(tokenString, os.Getenv("JWT_SECRET"))
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":      "token has been revoked",
+				"error":      "invalid or expired token",
 				"request_id": c.GetString("requestID"),
 			})
 			c.Abort()
 			return
 		}
 
-		claims, err := utils.ParseToken(tokenString, os.Getenv("JWT_SECRET"))
-		if err != nil {
+		if redisClient != nil && redisClient.IsBlacklisted(claims.ID) {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":      "invalid or expired token",
+				"error":      "token has been revoked",
 				"request_id": c.GetString("requestID"),
 			})
 			c.Abort()
