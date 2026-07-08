@@ -3,3 +3,10 @@
 data/
 bin/
 docs/
+
+# OS
+.DS_Store
+
+# Interview prep files (keep private)
+INTERVIEW_PREP.md
+INTERVIEW_PREP.pdf
