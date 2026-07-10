@@ -100,6 +100,28 @@ Scripts: `loadtest/login.js`, `loadtest/profile.js`, `loadtest/refresh.js`
 |---------|-----|-------------|
 | AuthService | ValidateToken | Validate a JWT and return claims — for internal service-to-service auth |
 
+## Consumers / Polyglot Architecture
+
+The gRPC `ValidateToken` endpoint isn't just a design flourish — it has a real consumer: a separate **Java/Spring Boot resource service** ([springboot-resource-api](https://github.com/AshrafAhmed9/springboot-resource-api)) that authenticates every request against this Go service over gRPC. Together they form a polyglot microservices identity system.
+
+```
+                 REST + JWT                       gRPC ValidateToken
+  Client ─────────────────────▶ Notes API (Java) ─────────────────────▶ Auth Service (Go, this repo)
+                                     │                                        │
+                                PostgreSQL                            PostgreSQL + Redis
+                                (notes)                               (users, revocation blacklist)
+```
+
+- Clients log in here (`/login`) and send the JWT to the Java service.
+- The Java service validates it via this service's gRPC `ValidateToken` and enforces its own resource ownership + `ROLE_ADMIN` rules.
+- The `.proto` contract is shared verbatim, so a contract drift is a compile error in the Java build, not a runtime surprise.
+
+**Cross-service design contrasts worth knowing:**
+- **Revocation vs. cache latency:** this service checks each token's `jti` against a Redis blacklist for instant revocation. The Java consumer caches successful validations for ≤60s to cut gRPC round-trips — deliberately trading up-to-60s revocation latency for availability and lower load on this service.
+- **Fail-closed vs. fail-open:** the Java service *fails closed* (503) when this service is unreachable and the token isn't cached — a resource API must not serve data it can't authorize. This service's rate limiter *fails open* (falls back to in-memory) when Redis dies — rate limiting is a QoS concern, not a security gate. Same failure pattern, opposite policy, driven by what each dependency protects.
+
+A combined `docker compose up` that runs **both** services lives in the Java repo (it builds this service from a sibling checkout).
+
 ## Example Requests
 
 ```bash
