@@ -1,10 +1,10 @@
-# Authentication & Authorization Service in Go
+# Go Auth Service
 
 ![CI](https://github.com/AshrafAhmed9/go-auth-service/actions/workflows/ci.yml/badge.svg)
 
-A production-grade JWT authentication, RBAC, and token-management service built with Go. Features short-lived access tokens with rotating refresh tokens, Redis-backed distributed rate limiting with in-memory fallback, account lockout, per-user throttling, audit logging, gRPC token validation, and dual-database support (Postgres for production, SQLite for zero-dependency local development).
+A JWT auth service in Go. It does the usual login/signup stuff, but I spent most of the effort on the things that are easy to get wrong: short-lived access tokens with rotating refresh tokens, refresh-token reuse detection, Redis-backed rate limiting that falls back to in-memory when Redis is down, account lockout, per-user throttling, and an audit log. There's also a gRPC endpoint for other services to validate tokens against, and it runs on Postgres in "production" or SQLite locally so you don't need any infra to try it.
 
-**31 tests** | **Postgres + SQLite dual-driver** | **gRPC + REST** | **k6 load-tested**
+31 tests · Postgres + SQLite · gRPC + REST · load-tested with k6
 
 ## Architecture
 
@@ -76,7 +76,7 @@ Tested with k6 (10 concurrent VUs, 40s run, SQLite, single instance):
 | `POST /login` | ~17 | 345ms | 409ms | bcrypt cost 12 (~340ms/hash) |
 | `GET /profile` | ~72 | 4ms | 10ms | JWT parse + DB read |
 
-Login throughput plateaus at ~17 req/s regardless of concurrency because each request blocks on `bcrypt.CompareHashAndPassword` for ~340ms. This is a feature, not a bug — the same property that limits throughput is what makes brute-forcing a leaked password database impractical. The authenticated read path (`/profile`) is 18x faster because it only validates the JWT signature (a fast HMAC check) and performs a single DB lookup.
+Login tops out around 17 req/s no matter how many VUs I throw at it, because every request sits in `bcrypt.CompareHashAndPassword` for ~340ms. That's the point of bcrypt though — the same slowness that caps throughput is what makes brute-forcing a leaked password dump impractical. `/profile` is about 18x faster since it just checks the JWT signature (a cheap HMAC) and does one DB read.
 
 Scripts: `loadtest/login.js`, `loadtest/profile.js`, `loadtest/refresh.js`
 
@@ -100,9 +100,9 @@ Scripts: `loadtest/login.js`, `loadtest/profile.js`, `loadtest/refresh.js`
 |---------|-----|-------------|
 | AuthService | ValidateToken | Validate a JWT and return claims — for internal service-to-service auth |
 
-## Consumers / Polyglot Architecture
+## Who actually uses the gRPC endpoint
 
-The gRPC `ValidateToken` endpoint isn't just a design flourish — it has a real consumer: a separate **Java/Spring Boot resource service** ([springboot-resource-api](https://github.com/AshrafAhmed9/springboot-resource-api)) that authenticates every request against this Go service over gRPC. Together they form a polyglot microservices identity system.
+The `ValidateToken` gRPC method isn't just sitting there for show — I built a second service that uses it. It's a Java/Spring Boot resource API ([springboot-resource-api](https://github.com/AshrafAhmed9/springboot-resource-api)) that checks every incoming request against this Go service over gRPC. So the two of them together are a little polyglot microservices setup.
 
 ```
                  REST + JWT                       gRPC ValidateToken
@@ -112,15 +112,16 @@ The gRPC `ValidateToken` endpoint isn't just a design flourish — it has a real
                                 (notes)                               (users, revocation blacklist)
 ```
 
-- Clients log in here (`/login`) and send the JWT to the Java service.
-- The Java service validates it via this service's gRPC `ValidateToken` and enforces its own resource ownership + `ROLE_ADMIN` rules.
-- The `.proto` contract is shared verbatim, so a contract drift is a compile error in the Java build, not a runtime surprise.
+How it fits together:
+- You log in here (`/login`) and hand the JWT to the Java service.
+- The Java service calls this service's `ValidateToken` to check it, then applies its own ownership + `ROLE_ADMIN` rules.
+- Both sides share the same `.proto` file, so if I change the contract the Java build breaks at compile time instead of blowing up at runtime.
 
-**Cross-service design contrasts worth knowing:**
-- **Revocation vs. cache latency:** this service checks each token's `jti` against a Redis blacklist for instant revocation. The Java consumer caches successful validations for ≤60s to cut gRPC round-trips — deliberately trading up-to-60s revocation latency for availability and lower load on this service.
-- **Fail-closed vs. fail-open:** the Java service *fails closed* (503) when this service is unreachable and the token isn't cached — a resource API must not serve data it can't authorize. This service's rate limiter *fails open* (falls back to in-memory) when Redis dies — rate limiting is a QoS concern, not a security gate. Same failure pattern, opposite policy, driven by what each dependency protects.
+A couple of design choices differ between the two services on purpose, which makes for a decent thing to talk through:
+- **Revocation vs. caching.** This service checks each token's `jti` against the Redis blacklist every time, so revocation is instant. The Java side caches good validations for up to 60s to avoid a gRPC hop on every request — so a revoked token can stay usable there for up to a minute. That's a conscious trade of instant revocation for latency and less load on this service.
+- **Failing closed vs. failing open.** If this service is down and the token isn't cached, the Java service returns 503 — it won't serve data it can't authorize. This service's rate limiter does the opposite: if Redis dies it falls back to in-memory limits rather than locking everyone out, because rate limiting is a nice-to-have, not a security boundary. Same "dependency went down" situation, opposite call, depending on what's actually at stake.
 
-A combined `docker compose up` that runs **both** services lives in the Java repo (it builds this service from a sibling checkout).
+The combined `docker compose up` that boots both services lives in the Java repo (it builds this one from a sibling folder).
 
 ## Example Requests
 
