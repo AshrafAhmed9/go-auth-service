@@ -10,9 +10,13 @@ import (
 )
 
 func protectedRouter() *gin.Engine {
+	return protectedRouterWithCache(nil)
+}
+
+func protectedRouterWithCache(cache *RedisClient) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/protected", requireAuth(testConfig(), nil), func(c *gin.Context) {
+	r.GET("/protected", requireAuth(testConfig(), cache), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 	return r
@@ -72,5 +76,27 @@ func TestRequireAuth_ValidToken(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestRequireAuth_BlacklistedToken(t *testing.T) {
+	cache := testRedisClient(t)
+	token, _ := generateToken(1, "alice@test.com", "user", testSecret, time.Hour)
+	claims, err := parseToken(token, testSecret)
+	if err != nil {
+		t.Fatalf("failed to parse the token we just generated: %v", err)
+	}
+	if err := cache.Blacklist(claims.ID, time.Minute); err != nil {
+		t.Fatalf("failed to blacklist: %v", err)
+	}
+
+	r := protectedRouterWithCache(cache)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/protected", nil)
+	withBearer(req, token)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for a blacklisted token, got %d", w.Code)
 	}
 }

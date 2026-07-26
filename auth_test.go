@@ -225,6 +225,37 @@ func TestRefresh_InvalidToken(t *testing.T) {
 // TestRefresh_ConcurrentReplayOnlySucceedsOnce is the test that would have
 // failed on the old read-then-write rotation: two goroutines race to
 // refresh the same token, and exactly one may win.
+func TestLogout_BlacklistsAccessToken(t *testing.T) {
+	cache := testRedisClient(t)
+	gin.SetMode(gin.TestMode)
+	h := newAuthHandler(testDB(t), testConfig(), cache)
+	r := gin.New()
+	r.POST("/signup", h.Signup)
+	r.POST("/login", h.Login)
+	r.POST("/logout", requireAuth(testConfig(), cache), h.Logout)
+
+	login := signupAndLogin(r, t)
+	access := login["access_token"].(string)
+
+	logoutOnce := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/logout", nil)
+		req.Header.Set("Authorization", "Bearer "+access)
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := logoutOnce(); w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on first logout, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Same access token again: logout should have blacklisted it, so this
+	// must be rejected by requireAuth before Logout even runs a second time.
+	if w := logoutOnce(); w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 reusing a token that logout already blacklisted, got %d", w.Code)
+	}
+}
+
 func TestRefresh_ConcurrentReplayOnlySucceedsOnce(t *testing.T) {
 	r, _ := testRouter(t)
 	login := signupAndLogin(r, t)
