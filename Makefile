@@ -1,11 +1,11 @@
 run:
-	go run main.go
+	go run .
 
 test:
 	go test ./... -v
 
 build:
-	go build -o bin/app main.go
+	go build -o bin/app .
 
 fmt:
 	go fmt ./...
@@ -24,12 +24,3 @@ migrate-down:
 
 migrate-create:
 	migrate create -ext sql -dir migrations -seq $(name)
-
-loadtest-login:
-	k6 run loadtest/login.js
-
-loadtest-profile:
-	k6 run loadtest/profile.js
-
-loadtest-refresh:
-	k6 run loadtest/refresh.js

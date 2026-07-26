@@ -1,110 +1,53 @@
 package main
 
+// Every route this service exposes is listed right here, in one place, so
+// "what can this service do" is answerable by reading one function.
 import (
-	"context"
 	"log"
-	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
-	"github.com/AshrafAhmed9/assignment-golang/cache"
-	"github.com/AshrafAhmed9/assignment-golang/config"
-	"github.com/AshrafAhmed9/assignment-golang/database"
-	"github.com/AshrafAhmed9/assignment-golang/grpcserver"
-	"github.com/AshrafAhmed9/assignment-golang/handlers"
-	"github.com/AshrafAhmed9/assignment-golang/middleware"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
 )
 
 func main() {
-	cfg := config.Load()
-	db := database.Connect(cfg.DBDriver, cfg.DatabaseURL, cfg.BcryptCost)
+	cfg := loadConfig()
+	db := openStore(cfg)
+	redis := newRedisClient(cfg.RedisAddr)
+	limiter := newRateLimiter(redis, cfg.RateLimitRequests, cfg.RateLimitWindow)
+	auth := newAuthHandler(db, cfg, redis)
 
-	rdb := cache.NewRedisClient(cfg.RedisAddr)
-	middleware.SetRedisClient(rdb)
+	router := gin.New()
+	router.Use(gin.Recovery())
 
-	authHandler := handlers.NewAuthHandler(db, cfg, rdb)
-	userHandler := handlers.NewUserHandler(db)
-	healthHandler := handlers.NewHealthHandler(db)
-
-	r := gin.New()
-	r.Use(middleware.SecurityHeaders())
-	r.Use(middleware.RequestID())
-	r.Use(gin.Recovery())
-	r.Use(func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		slog.Info("request",
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"latency_ms", time.Since(start).Milliseconds(),
-			"request_id", c.GetString("requestID"),
-		)
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	router.POST("/signup", auth.Signup)
+	router.POST("/login", limiter.Middleware(), auth.Login)
+	router.POST("/refresh", auth.Refresh)
+	router.POST("/logout", requireAuth(cfg, redis), auth.Logout)
 
-	r.GET("/health", healthHandler.Health)
-	r.POST("/signup", authHandler.Signup)
-	r.POST("/login", middleware.RateLimitMiddleware(rdb, cfg.RateLimitRequests, cfg.RateLimitWindow), authHandler.Login)
-	r.POST("/refresh", authHandler.Refresh)
+	go serveGRPC(cfg, redis)
 
-	protected := r.Group("/")
-	protected.Use(middleware.JWTAuthMiddleware())
-	protected.Use(middleware.PerUserRateLimitMiddleware(rdb, cfg.PerUserLimitRequests, cfg.PerUserLimitWindow))
-	{
-		protected.GET("/profile", userHandler.Profile)
-		protected.POST("/logout", authHandler.Logout)
+	log.Println("server started on port", cfg.Port)
+	if err := router.Run(":" + cfg.Port); err != nil {
+		log.Fatal("server error: ", err)
+	}
+}
 
-		admin := protected.Group("/")
-		admin.Use(middleware.AdminOnlyMiddleware())
-		{
-			admin.GET("/users", userHandler.GetAllUsers)
-		}
+func serveGRPC(cfg *Config, redis *RedisClient) {
+	lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
+	if err != nil {
+		log.Fatal("failed to listen for gRPC: ", err)
 	}
 
-	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
+	srv := grpc.NewServer()
+	registerGRPCServer(srv, cfg.JWTSecret, redis)
+
+	log.Println("gRPC server started on port", cfg.GRPCPort)
+	if err := srv.Serve(lis); err != nil {
+		log.Fatal("gRPC server error: ", err)
 	}
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server error:", err)
-		}
-	}()
-
-	slog.Info("server started", "port", cfg.Port)
-
-	grpcSrv := grpc.NewServer()
-	grpcserver.RegisterServer(grpcSrv, cfg.JWTSecret, rdb)
-
-	go func() {
-		lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
-		if err != nil {
-			log.Fatal("failed to listen for gRPC:", err)
-		}
-		slog.Info("gRPC server started", "port", cfg.GRPCPort)
-		if err := grpcSrv.Serve(lis); err != nil {
-			log.Fatal("gRPC server error:", err)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	slog.Info("shutting down servers...")
-	grpcSrv.GracefulStop()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Shutdown(ctx)
-	slog.Info("servers stopped")
 }
