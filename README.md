@@ -230,6 +230,7 @@ ratelimit.go          Per-IP rate limiting with in-memory fallback
 redis.go              Redis client (blacklist + rate-limit counter)
 grpc.go               gRPC ValidateToken implementation
 *_test.go             31 tests, one file per source file it covers
+helpers_test.go       shared test helpers (miniredis setup) — no tests of its own
 
 proto/
 ├── auth.proto        Protobuf service definition
