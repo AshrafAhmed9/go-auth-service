@@ -132,9 +132,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		Update("revoked_at", time.Now())
 
 	if result.RowsAffected == 0 {
-		h.db.Model(&RefreshToken{}).
-			Where("user_id = ? AND revoked_at IS NULL", rt.UserID).
-			Update("revoked_at", time.Now())
+		h.revokeAllSessions(rt.UserID)
 		fail(c, http.StatusUnauthorized, "refresh token reuse detected, all sessions revoked")
 		return
 	}
@@ -164,11 +162,19 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		}
 	}
 
-	h.db.Model(&RefreshToken{}).
-		Where("user_id = ? AND revoked_at IS NULL", claims.UserID).
-		Update("revoked_at", time.Now())
+	h.revokeAllSessions(claims.UserID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
+}
+
+// revokeAllSessions kills every outstanding refresh token for one user.
+// Two very different situations need it: a normal logout, and a replayed
+// refresh token, which means someone else has a copy and nothing that
+// user holds can be trusted anymore.
+func (h *AuthHandler) revokeAllSessions(userID uint) {
+	h.db.Model(&RefreshToken{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", time.Now())
 }
 
 // issueTokenPair mints a fresh access token plus a fresh, rotated refresh
