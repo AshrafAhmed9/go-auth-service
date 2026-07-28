@@ -89,7 +89,16 @@ A couple of design choices differ between the two services on purpose, which mak
 - **Revocation vs. caching.** This service checks each token's `jti` against the Redis blacklist every time, so revocation is instant. The Java side caches good validations for up to 60s to avoid a gRPC hop on every request — so a revoked token can stay usable there for up to a minute. That's a conscious trade of instant revocation for latency and less load on this service.
 - **Failing closed vs. failing open.** If this service is down and the token isn't cached, the Java service returns 503 — it won't serve data it can't authorize. This service's rate limiter does the opposite: if Redis dies it falls back to in-memory limits rather than locking everyone out, because rate limiting is a nice-to-have, not a security boundary. Same "dependency went down" situation, opposite call, depending on what's actually at stake.
 
-The combined `docker compose up` that boots both services lives in the Java repo (it builds this one from a sibling folder).
+### Seeing both services run together
+
+```bash
+git clone https://github.com/AshrafAhmed9/springboot-resource-api.git   # as a sibling folder
+./demo.sh
+```
+
+`demo.sh` boots both services, then walks through the whole story with narration: log in here, use that token against the Java service, kill this service mid-session to show the Java side returning 503 rather than serving data it can't authorize, then restart it and watch it recover on its own. Pass `--reset` to wipe old data first.
+
+The combined compose file itself lives in the Java repo (it's the side that builds both images); `demo.sh` finds it and drives it.
 
 ## Example Requests
 
@@ -236,6 +245,7 @@ proto/
 ├── auth.proto        Protobuf service definition
 └── authpb/           Generated Go stubs
 migrations/           Versioned SQL migrations (Postgres)
+demo.sh               narrated two-service demo (needs the Java repo alongside)
 Dockerfile
 docker-compose.yml    Postgres + Redis + API
 .github/workflows/ci.yml

@@ -156,7 +156,7 @@ const file_auth_proto_rawDesc = "" +
 	"\x04role\x18\x04 \x01(\tR\x04role\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error2W\n" +
 	"\vAuthService\x12H\n" +
-	"\rValidateToken\x12\x1a.auth.ValidateTokenRequest\x1a\x1b.auth.ValidateTokenResponseB8Z6github.com/AshrafAhmed9/assignment-golang/proto/authpbb\x06proto3"
+	"\rValidateToken\x12\x1a.auth.ValidateTokenRequest\x1a\x1b.auth.ValidateTokenResponseB6Z4github.com/AshrafAhmed9/go-auth-service/proto/authpbb\x06proto3"
 
 var (
 	file_auth_proto_rawDescOnce sync.Once

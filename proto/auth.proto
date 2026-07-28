@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package auth;
 
-option go_package = "github.com/AshrafAhmed9/assignment-golang/proto/authpb";
+option go_package = "github.com/AshrafAhmed9/go-auth-service/proto/authpb";
+option java_package = "com.ashraf.notesapi.grpc.auth";
+option java_outer_classname = "AuthProto";
 
 service AuthService {
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);

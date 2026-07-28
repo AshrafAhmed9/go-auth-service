@@ -53,16 +53,8 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
-	if req.Name == "" || req.Email == "" || req.Password == "" {
-		fail(c, http.StatusBadRequest, "name, email and password are required")
-		return
-	}
-	if !strings.Contains(req.Email, "@") {
-		fail(c, http.StatusBadRequest, "invalid email")
-		return
-	}
-	if len(req.Password) < 8 {
-		fail(c, http.StatusBadRequest, "password must be at least 8 characters")
+	if problem := checkSignup(req); problem != "" {
+		fail(c, http.StatusBadRequest, problem)
 		return
 	}
 
@@ -87,6 +79,21 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, user)
+}
+
+// checkSignup returns the reason a signup is rejected, or "" if it's fine.
+// Keeping the rules in one list means Signup itself reads as three steps —
+// validate, check for a duplicate, create — instead of a wall of ifs.
+func checkSignup(req signupRequest) string {
+	switch {
+	case req.Name == "" || req.Email == "" || req.Password == "":
+		return "name, email and password are required"
+	case !strings.Contains(req.Email, "@"):
+		return "invalid email"
+	case len(req.Password) < 8:
+		return "password must be at least 8 characters"
+	}
+	return ""
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {

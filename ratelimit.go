@@ -20,8 +20,8 @@ type rateLimiter struct {
 	limit  int
 	window time.Duration
 
-	mu      sync.Mutex
-	local   map[string]*localWindow
+	mu    sync.Mutex
+	local map[string]*localWindow
 }
 
 type localWindow struct {

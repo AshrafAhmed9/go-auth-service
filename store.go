@@ -2,8 +2,8 @@ package main
 
 // openStore connects to Postgres in production or a local SQLite file in
 // development, using the same GORM models either way. A single admin
-// account is seeded on first run so there's always a way to exercise
-// admin-only behaviour in the Spring Boot service that consumes this API.
+// account is seeded on first run so a fresh database always has one
+// account you can log in with — otherwise every demo starts with a signup.
 import (
 	"log"
 	"os"

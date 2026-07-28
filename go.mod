@@ -1,4 +1,4 @@
-module github.com/AshrafAhmed9/assignment-golang
+module github.com/AshrafAhmed9/go-auth-service
 
 go 1.26.3
 

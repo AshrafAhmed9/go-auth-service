@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AshrafAhmed9/assignment-golang/proto/authpb"
+	"github.com/AshrafAhmed9/go-auth-service/proto/authpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

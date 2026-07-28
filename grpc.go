@@ -9,7 +9,7 @@ package main
 import (
 	"context"
 
-	"github.com/AshrafAhmed9/assignment-golang/proto/authpb"
+	"github.com/AshrafAhmed9/go-auth-service/proto/authpb"
 	"google.golang.org/grpc"
 )
 
