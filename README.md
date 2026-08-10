@@ -234,11 +234,12 @@ config.go            Environment variable loading and validation
 models.go            User and RefreshToken structs
 store.go             DB connection (Postgres/SQLite), admin seeding
 jwt.go                JWT generation + parsing (HS256, jti)
-auth.go               Signup, Login, Refresh, Logout, requireAuth middleware
+auth.go               Signup, Login, Refresh, Logout
+middleware.go         requireAuth — the guard on protected routes
 ratelimit.go          Per-IP rate limiting with in-memory fallback
 redis.go              Redis client (blacklist + rate-limit counter)
 grpc.go               gRPC ValidateToken implementation
-*_test.go             31 tests, one file per source file it covers
+*_test.go             31 tests, named after the file each one covers
 helpers_test.go       shared test helpers (miniredis setup) — no tests of its own
 
 proto/

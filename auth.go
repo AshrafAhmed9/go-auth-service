@@ -213,33 +213,6 @@ func (h *AuthHandler) issueTokenPair(c *gin.Context, user *User) {
 	})
 }
 
-// requireAuth protects a route with a valid, non-blacklisted access token.
-func requireAuth(cfg *Config, cache *RedisClient) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		header := c.GetHeader("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
-			fail(c, http.StatusUnauthorized, "authorization header required")
-			c.Abort()
-			return
-		}
-
-		claims, err := parseToken(strings.TrimPrefix(header, "Bearer "), cfg.JWTSecret)
-		if err != nil {
-			fail(c, http.StatusUnauthorized, "invalid or expired token")
-			c.Abort()
-			return
-		}
-		if cache != nil && cache.IsBlacklisted(claims.ID) {
-			fail(c, http.StatusUnauthorized, "token has been revoked")
-			c.Abort()
-			return
-		}
-
-		c.Set("claims", claims)
-		c.Next()
-	}
-}
-
 func fail(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{"error": message})
 }
