@@ -2,231 +2,113 @@
 
 ![CI](https://github.com/AshrafAhmed9/go-auth-service/actions/workflows/ci.yml/badge.svg)
 
-A JWT auth service in Go. It does the usual login/signup stuff, but I spent most of the effort on the things that are easy to get wrong: short-lived access tokens with rotating refresh tokens, refresh-token reuse detection, and Redis-backed rate limiting that falls back to in-memory when Redis is down. There's also a gRPC endpoint for other services to validate tokens against, and it runs on Postgres in "production" or SQLite locally so you don't need any infra to try it.
+A JWT identity service in Go, and the auth half of a two-service system. This service handles who you are; a [Spring Boot service](https://github.com/AshrafAhmed9/springboot-resource-api) handles what you own, and checks every request against this one over gRPC.
 
-31 tests · Postgres + SQLite · gRPC + REST
+Most auth demos stop at "issue a JWT, check the signature." The part that's actually hard is what happens after: how do you let a session last a week without a 7-day token sitting around as a stolen-and-reused liability, and how do you revoke something that's cryptographically designed not to need a database lookup? Those two problems are what this service is built around.
 
-## Architecture
+**31 tests · Postgres + SQLite · gRPC + REST**
 
-```
-                          ┌─────────────────────────────────┐
-                          │        Gin HTTP :8080            │
-                          │                                   │
-  Client ──── REST ──────►│  Rate Limiter (Redis / in-memory)│  ← /login only
-                          │  → Handler                        │
-                          │  (JWT Auth Middleware on /logout) │
-                          └──────────┬──────────┬─────────────┘
-                                     │          │
-  Service ── gRPC :9090 ─► ValidateToken        │
-                                     │          │
-                          ┌──────────▼──┐  ┌────▼────┐
-                          │  Postgres   │  │  Redis  │
-                          │  (or SQLite)│  │         │
-                          │             │  │ blacklist│
-                          │ users       │  │ rate lim │
-                          │ refresh_tkns│  └─────────┘
-                          └─────────────┘
-```
+## The core idea
 
-## Features
+Access tokens are short-lived JWTs, 15 minutes, verified by recomputing a signature with no database hit required. That's what makes them fast, and it's also why they can't be revoked: the signature is valid until it expires, full stop. So staying logged in for a week runs through a second credential, a refresh token, that works the opposite way: opaque, stored, and checked against the database on every use, because a credential you can revoke is one you have to look up.
 
-**Authentication & Token Management**
-- JWT access tokens (HS256, 15-min TTL, `jti` claim for revocation)
-- Rotating refresh tokens (7-day TTL, SHA-256 hashed, DB-stored)
-- Refresh token reuse detection — replaying a consumed token revokes all sessions for that user, via a single atomic conditional UPDATE (not a check-then-write, which would race under concurrent replay)
-- Token blacklist via Redis with TTL matching remaining token life (auto-expires, zero cleanup)
-- bcrypt password hashing with configurable cost factor
+The refresh token is where the interesting engineering lives. It's single-use: every refresh consumes the old one and issues a new one. That single property turns theft from invisible into detectable: if a refresh token is ever presented twice, someone other than the real user has a copy, and there's no way to tell which presentation is legitimate. So the response isn't to guess. It's to revoke every session that user has and force a real login.
 
-**Security**
-- Distributed rate limiting (Redis INCR + EXPIRE) on `/login`, with automatic in-memory fallback if Redis is unreachable
-- `alg:none` attack prevention (explicit HMAC signing method assertion)
-- Role hardcoded server-side — signup always assigns "user", never trusts client input
+Making that check reliable took getting one detail right. The obvious implementation reads the token's row, checks if it's already revoked, and if not, revokes it: three steps, two of them separated in time. Two simultaneous replays of the same stolen token can both pass the check before either commits the write, and both succeed. The fix is to fold the check into the write itself:
 
-**Infrastructure**
-- Dual-database support: Postgres (production) + SQLite (local/test) via GORM driver switching
-- Versioned SQL migrations (golang-migrate) for Postgres; AutoMigrate for SQLite
-- gRPC token-validation service for internal service-to-service auth
-- Multi-stage Docker build running as non-root user
-- Docker Compose with Postgres + Redis
-- CI pipeline running the full test suite on every push
+```go
+result := h.db.Model(&RefreshToken{}).
+    Where("id = ? AND revoked_at IS NULL", rt.ID).
+    Update("revoked_at", time.Now())
 
-## API
-
-### REST (HTTP :8080)
-
-| Method | Path | Auth | Rate Limited | Description |
-|--------|------|------|-------------|-------------|
-| POST | /signup | No | No | Register a new user |
-| POST | /login | No | Per-IP | Authenticate and receive access + refresh tokens |
-| POST | /refresh | No | No | Exchange refresh token for new token pair (rotation) |
-| POST | /logout | JWT | No | Revoke access token + all refresh tokens |
-| GET | /health | No | No | Service health check |
-
-### gRPC (TCP :9090)
-
-| Service | RPC | Description |
-|---------|-----|-------------|
-| AuthService | ValidateToken | Validate a JWT and return claims — for internal service-to-service auth |
-
-## Who actually uses the gRPC endpoint
-
-The `ValidateToken` gRPC method isn't just sitting there for show — I built a second service that uses it. It's a Java/Spring Boot resource API ([springboot-resource-api](https://github.com/AshrafAhmed9/springboot-resource-api)) that checks every incoming request against this Go service over gRPC. So the two of them together are a little polyglot microservices setup, and that's also where the load-test numbers for the auth path live — see that repo's README for the two-service k6 results.
-
-```
-                 REST + JWT                       gRPC ValidateToken
-  Client ─────────────────────▶ Notes API (Java) ─────────────────────▶ Auth Service (Go, this repo)
-                                     │                                        │
-                                PostgreSQL                            PostgreSQL + Redis
-                                (notes)                               (users, revocation blacklist)
+if result.RowsAffected == 0 {
+    h.revokeAllSessions(rt.UserID)
+    // reuse detected, every session for this user dies here
+}
 ```
 
-How it fits together:
-- You log in here (`/login`) and hand the JWT to the Java service.
-- The Java service calls this service's `ValidateToken` to check it, then applies its own ownership rules.
-- Both sides share the same `.proto` file, so if I change the contract the Java build breaks at compile time instead of blowing up at runtime.
+One atomic UPDATE. The database's row lock decides who wins a simultaneous race, and `RowsAffected == 0` isn't just "I lost a race," it's the exact definition of reuse. The concurrency fix and the security check turned out to be the same line.
 
-A couple of design choices differ between the two services on purpose, which makes for a decent thing to talk through:
-- **Revocation vs. caching.** This service checks each token's `jti` against the Redis blacklist every time, so revocation is instant. The Java side caches good validations for up to 60s to avoid a gRPC hop on every request — so a revoked token can stay usable there for up to a minute. That's a conscious trade of instant revocation for latency and less load on this service.
-- **Failing closed vs. failing open.** If this service is down and the token isn't cached, the Java service returns 503 — it won't serve data it can't authorize. This service's rate limiter does the opposite: if Redis dies it falls back to in-memory limits rather than locking everyone out, because rate limiting is a nice-to-have, not a security boundary. Same "dependency went down" situation, opposite call, depending on what's actually at stake.
+## How the two services fit together
 
-### Seeing both services run together
+```mermaid
+flowchart TB
+    Client(["Client"])
+    Login["POST /login\nGo Auth Service"]
+    Notes["Notes API\nSpring Boot"]
+    Validate["ValidateToken (gRPC)\nGo Auth Service"]
 
-```bash
-git clone https://github.com/AshrafAhmed9/springboot-resource-api.git   # as a sibling folder
-./demo.sh
+    Client -- "1. credentials" --> Login
+    Login -- "2. JWT" --> Client
+    Client -- "3. JWT + request" --> Notes
+    Notes -- "4. is this valid?" --> Validate
+    Validate -- "5. user id, role" --> Notes
+    Notes -- "6. the requested notes" --> Client
 ```
 
-`demo.sh` boots both services, then walks through the whole story with narration: log in here, use that token against the Java service, kill this service mid-session to show the Java side returning 503 rather than serving data it can't authorize, then restart it and watch it recover on its own. Pass `--reset` to wipe old data first.
+Both sides share one `.proto` file, so the contract is enforced by the compiler, not by hope: rename a field here and the Java build fails before it ever reaches production. And the two services made opposite calls about what to do when a dependency dies, which is one of the better things to talk through: this service's rate limiter fails *open* to an in-memory fallback if Redis goes down, because a locked-out login system is worse than a temporarily weaker one. The Java service fails *closed*, 503, refuse the request, if it can't reach this service, because serving data it couldn't authorize is worse than an error. Same category of problem, opposite answer, because the cost of being wrong is different each time.
 
-The combined compose file itself lives in the Java repo (it's the side that builds both images); `demo.sh` finds it and drives it.
+## What's inside
 
-## Example Requests
+**Tokens.** HS256-signed JWTs with a `jti` claim for targeted revocation. `parseToken` explicitly asserts the signing method is HMAC before trusting anything else in the token, which is what blocks the classic `alg: none` forgery, where an attacker edits the header to claim no signature is needed at all. Refresh tokens are 32 random bytes from `crypto/rand`, stored as a SHA-256 hash, never the raw value, so a database leak yields nothing usable at `/refresh`.
 
-```bash
-# Signup
-curl -X POST http://localhost:8080/signup \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Alice","email":"alice@example.com","password":"secret123"}'
+**Revocation.** Logging out can't un-sign a JWT, so it blacklists the token's `jti` in Redis instead, with the blacklist entry's TTL set to exactly the token's remaining lifetime. It expires itself the moment it would stop mattering: no cleanup job, no unbounded growth.
 
-# Login — returns access_token + refresh_token
-curl -X POST http://localhost:8080/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"alice@example.com","password":"secret123"}'
+**Rate limiting.** `/login` is capped per IP via a Redis-backed fixed-window counter, because it's the one endpoint where credentials can be guessed, and because bcrypt at cost 12 makes it the most CPU-expensive endpoint in the service. If Redis is unreachable, it degrades to an in-process counter rather than either locking everyone out or letting every request through.
 
-# Refresh tokens (rotate)
-curl -X POST http://localhost:8080/refresh \
-  -H "Content-Type: application/json" \
-  -d '{"refresh_token":"<refresh_token>"}'
+**gRPC.** One RPC, `ValidateToken`, and the detail that makes the whole cross-service design hold together: an expired or revoked token is never a gRPC *error*. It's a normal, successful response saying `valid: false`. Only an actually unreachable service looks like a transport error, which is what lets the Java side's circuit breaker count real failures without tripping over ordinary expired tokens.
 
-# Logout — blacklists access token, revokes all refresh tokens
-curl -X POST http://localhost:8080/logout \
-  -H "Authorization: Bearer <access_token>"
-```
+**Storage.** GORM behind a driver switch: Postgres in Docker, SQLite for local runs and for the test suite, which is why 31 tests finish in about two seconds with zero infrastructure. Postgres gets versioned SQL migrations; SQLite gets `AutoMigrate`, since a throwaway local database doesn't need migration discipline.
 
-## Security Model
-
-| Threat | Mitigation |
-|--------|------------|
-| Brute-force login | Per-IP rate limiting (Redis, in-memory fallback) |
-| Stolen access token | 15-minute TTL limits blast radius; Redis blacklist for explicit revocation |
-| Stolen refresh token | Single-use rotation; reuse detection revokes entire token chain |
-| Concurrent replay of a refresh token | Rotation is a single conditional UPDATE (`WHERE revoked_at IS NULL`), so only one of two simultaneous replays can ever succeed |
-| Token forgery | HS256 with explicit signing method check (blocks `alg:none` attack) |
-| Privilege escalation | Role hardcoded to "user" on signup; admin created only via startup seed |
-| Password leakage | bcrypt hashing (cost 12) + `json:"-"` tag (never serialized in responses) |
-| Weak JWT secret | Startup fails if secret < 32 characters |
-| Container privilege | Docker runs as non-root `appuser` |
-
-## Running Locally
+## Running it
 
 ```bash
 git clone https://github.com/AshrafAhmed9/go-auth-service.git
 cd go-auth-service
-cp .env.example .env
-# Set JWT_SECRET to a random string of at least 32 characters
+cp .env.example .env   # set JWT_SECRET to 32+ random characters
 make run
 ```
 
-Admin account is seeded automatically on first run: `admin@app.com` / `admin123`
-
-### With Docker (Postgres + Redis)
+A seeded admin account (`admin@app.com` / `admin123`) exists on first run so there's something to log in with immediately. With Docker instead:
 
 ```bash
-docker compose up --build
+docker compose up --build   # Postgres + Redis + the API
 ```
 
-### Running Tests
+To see it working alongside the Java service (login, cross-service note creation, killing the auth service mid-session to watch the notes API fail closed, then recovering automatically), clone `springboot-resource-api` as a sibling folder and run `./demo.sh --reset`. It narrates every step.
 
 ```bash
-make test                # 31 tests, SQLite in-memory + miniredis (no infra required)
+make test                # 31 tests, SQLite in-memory + miniredis, no infra
 go test ./... -race -cover
 ```
 
-### Database Migrations (Postgres)
+## API
 
-```bash
-# Install migrate CLI
-go install -tags "pgx5" github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+| Method | Path | Auth | Rate limited | Purpose |
+|---|---|---|---|---|
+| POST | `/signup` | No | No | Register a user (role is always `user`, server-assigned) |
+| POST | `/login` | No | Per-IP | Get an access + refresh token pair |
+| POST | `/refresh` | No | No | Rotate a refresh token for a new pair |
+| POST | `/logout` | JWT | No | Blacklist the access token, revoke all refresh tokens |
+| GET | `/health` | No | No | Liveness check |
 
-# Run migrations
-migrate -path migrations -database "pgx5://<DATABASE_URL>" up
-```
+gRPC on `:9090` exposes `AuthService.ValidateToken(token) → (valid, user_id, email, role, error)`, the one thing the Notes API calls, on every authenticated request.
 
-## Configuration
+## Design decisions and their honest costs
 
-All configuration via environment variables (`.env` file loaded automatically):
+15-minute access tokens plus 7-day refresh tokens with rotation: this bounds a stolen access token's blast radius to 15 minutes without forcing a password re-entry every quarter hour, and rotation makes refresh-token theft self-reporting instead of silent.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JWT_SECRET` | *(required)* | HMAC signing key (min 32 chars) |
-| `PORT` | `8080` | HTTP server port |
-| `GRPC_PORT` | `9090` | gRPC server port |
-| `BCRYPT_COST` | `12` | bcrypt work factor |
-| `ACCESS_TOKEN_MINUTES` | `15` | Access token TTL |
-| `REFRESH_TOKEN_HOURS` | `168` | Refresh token TTL (7 days) |
-| `REDIS_ADDR` | `localhost:6379` | Redis connection address |
-| `DB_DRIVER` | `sqlite` | Database driver (`sqlite` or `postgres`) |
-| `DATABASE_URL` | — | Postgres connection string |
-| `RATE_LIMIT_REQUESTS` | `5` | Max requests per IP per window |
-| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window duration |
+Redis rate limiting with an in-memory fallback: a shared counter is what makes "5 per minute" actually mean 5 per minute across multiple instances. Without sharing it, the limit weakens every time you scale out. The honest cost is that it's a fixed window, so a burst straddling a window boundary can let through up to double the stated limit. A token bucket would close that gap at the cost of more state per key.
 
-## Makefile Commands
+Opaque refresh tokens hashed with plain SHA-256, not bcrypt: bcrypt's slowness defends against guessing a low-entropy human password. A refresh token is 256 bits of CSPRNG output, nothing to guess, so a slow hash would only add latency with no security benefit.
 
-| Command | Description |
-|---------|-------------|
-| `make run` | Start the server |
-| `make test` | Run all 31 tests |
-| `make build` | Build binary to `bin/app` |
-| `make fmt` | Format all Go files |
-| `make lint` | Run `go vet` |
-| `make docker-build` | Build Docker image |
-| `make migrate-up` | Run Postgres migrations |
-| `make migrate-down` | Rollback Postgres migrations |
+Blacklist by `jti`, not the full token: same revocation power, a 36-character Redis key instead of a ~300-character one.
 
-## Design Decisions & Tradeoffs
+## Known limitations
 
-| Decision | Why |
-|----------|-----|
-| Short access token (15m) + rotating refresh token (7d) | Limits blast radius of a stolen access token while keeping users logged in. Rotation + reuse detection catches token theft. |
-| Refresh rotation is one conditional UPDATE, not read-then-write | Two concurrent replays of the same refresh token must not both succeed. A single `UPDATE ... WHERE revoked_at IS NULL` makes the "claim this token" step atomic — the loser's update affects zero rows and triggers reuse detection instead. |
-| Refresh token reuse detection revokes entire chain | If an already-consumed refresh token is replayed, the server assumes theft and revokes all of the user's sessions — forces re-authentication. |
-| Redis rate limiting with in-memory fallback | Distributed rate limiting survives across multiple instances. If Redis is down, the service degrades gracefully to per-instance in-memory limits rather than failing open or taking the login system down. |
-| Postgres for production, SQLite for local/test | Tests run in ~2s on in-memory SQLite with zero infrastructure. Production uses Postgres with versioned migrations. GORM's driver abstraction makes the switch a one-line config change. |
-| gRPC for internal token validation, REST for public API | Other microservices validate tokens via a typed gRPC contract (binary protobuf, HTTP/2) rather than each reimplementing JWT parsing. Public API stays REST for browser/client compatibility. |
-| Blacklist by JTI, not full token string | Shorter Redis keys. Each access token gets a UUID `jti` claim; revocation stores only the 36-char ID instead of the full ~300-char JWT. |
-| bcrypt cost 12 | ~340ms per hash on modern hardware. High enough to make brute-forcing impractical, low enough for acceptable login latency. Configurable via env var. |
+No MFA, no account lockout beyond per-IP rate limiting (a deliberate omission, since lockout is itself a denial-of-service vector against the account it's meant to protect), no secret rotation, and a single Redis instance as a point of failure for revocation and rate limiting both. None of these are hidden; they're the corners a two-service portfolio project reasonably cuts, not gaps I didn't notice.
 
-## Limitations
-
-- **JWT secret rotation** — not implemented; production systems would use a managed secret store (Vault, AWS KMS) with key rotation policies
-- **No MFA** — single-factor authentication only
-- **No account lockout** — brute-force defense is per-IP rate limiting only; a distributed attack from many IPs against one account isn't caught
-- **CORS** — not configured; browser-facing deployments would need explicit origin restrictions
-- **Single Redis instance** — a Redis Sentinel or Cluster setup would eliminate the SPOF
-- **No OAuth2/OIDC** — no "Login with Google" or federated identity; the service is its own identity provider
-- **No audit log** — security events aren't persisted anywhere queryable beyond stdout
-
-## Project Structure
+## Project structure
 
 ```
 main.go              HTTP + gRPC server startup, route registration
@@ -235,19 +117,22 @@ models.go            User and RefreshToken structs
 store.go             DB connection (Postgres/SQLite), admin seeding
 jwt.go                JWT generation + parsing (HS256, jti)
 auth.go               Signup, Login, Refresh, Logout
-middleware.go         requireAuth — the guard on protected routes
+middleware.go          requireAuth, the guard on protected routes
 ratelimit.go          Per-IP rate limiting with in-memory fallback
 redis.go              Redis client (blacklist + rate-limit counter)
 grpc.go               gRPC ValidateToken implementation
 *_test.go             31 tests, named after the file each one covers
-helpers_test.go       shared test helpers (miniredis setup) — no tests of its own
+demo.sh               Narrated two-service demo (needs the Java repo alongside)
 
 proto/
-├── auth.proto        Protobuf service definition
+├── auth.proto        Protobuf service definition (shared verbatim with the Java repo)
 └── authpb/           Generated Go stubs
 migrations/           Versioned SQL migrations (Postgres)
-demo.sh               narrated two-service demo (needs the Java repo alongside)
 Dockerfile
 docker-compose.yml    Postgres + Redis + API
 .github/workflows/ci.yml
 ```
+
+## The other half
+
+The [Spring Boot Notes API](https://github.com/AshrafAhmed9/springboot-resource-api) is what actually calls `ValidateToken`: a token-hash-keyed cache, a circuit breaker, and the fail-closed side of the design decision described above. Its README covers the k6 numbers for the combined path.
