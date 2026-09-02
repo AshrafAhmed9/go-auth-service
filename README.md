@@ -32,18 +32,17 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 ## How the two services fit together
 
 ```mermaid
-flowchart TB
-    Client(["Client"])
-    Login["POST /login\nGo Auth Service"]
-    Notes["Notes API\nSpring Boot"]
-    Validate["ValidateToken (gRPC)\nGo Auth Service"]
+sequenceDiagram
+    participant Client
+    participant Go as Go Auth Service
+    participant Java as Notes API (Spring Boot)
 
-    Client -- "1. credentials" --> Login
-    Login -- "2. JWT" --> Client
-    Client -- "3. JWT + request" --> Notes
-    Notes -- "4. is this valid?" --> Validate
-    Validate -- "5. user id, role" --> Notes
-    Notes -- "6. the requested notes" --> Client
+    Client->>Go: POST /login (credentials)
+    Go-->>Client: JWT
+    Client->>Java: request + JWT
+    Java->>Go: ValidateToken (gRPC)
+    Go-->>Java: user id, role
+    Java-->>Client: the requested notes
 ```
 
 Both sides share one `.proto` file, so the contract is enforced by the compiler, not by hope: rename a field here and the Java build fails before it ever reaches production. And the two services made opposite calls about what to do when a dependency dies, which is one of the better things to talk through: this service's rate limiter fails *open* to an in-memory fallback if Redis goes down, because a locked-out login system is worse than a temporarily weaker one. The Java service fails *closed*, 503, refuse the request, if it can't reach this service, because serving data it couldn't authorize is worse than an error. Same category of problem, opposite answer, because the cost of being wrong is different each time.
