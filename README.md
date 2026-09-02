@@ -31,30 +31,17 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 
 ## How the two services fit together
 
-Logging in only ever touches this service:
-
 ```mermaid
-sequenceDiagram
-    participant Client
-    participant Go as Go Auth Service
-
-    Client->>Go: POST /login (credentials)
-    Go-->>Client: JWT
+flowchart LR
+    C1(["Client"]) -->|"1 . POST /login"| Go1["Go Auth Service"]
+    Go1 -->|"2 . JWT"| C2(["Client"])
+    C2 -->|"3 . request + JWT"| Java["Notes API\n(Spring Boot)"]
+    Java -->|"4 . ValidateToken\n(gRPC)"| Go2["Go Auth Service"]
+    Go2 -->|"5 . user id, role"| Java
+    Java -->|"6 . the requested notes"| C3(["Client"])
 ```
 
-Every request after that only ever touches the Go service through Java, over gRPC, never directly:
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Java as Notes API (Spring Boot)
-    participant Go as Go Auth Service
-
-    Client->>Java: request + JWT
-    Java->>Go: ValidateToken (gRPC)
-    Go-->>Java: user id, role
-    Java-->>Client: the requested notes
-```
+Login only ever touches this service. Every request after that touches it only through Java, over gRPC, never directly from the client.
 
 Both sides share one `.proto` file, so the contract is enforced by the compiler, not by hope: rename a field here and the Java build fails before it ever reaches production. And the two services made opposite calls about what to do when a dependency dies, which is one of the better things to talk through: this service's rate limiter fails *open* to an in-memory fallback if Redis goes down, because a locked-out login system is worse than a temporarily weaker one. The Java service fails *closed*, 503, refuse the request, if it can't reach this service, because serving data it couldn't authorize is worse than an error. Same category of problem, opposite answer, because the cost of being wrong is different each time.
 
