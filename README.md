@@ -34,8 +34,8 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Go as Go Auth Service
     participant Java as Notes API (Spring Boot)
+    participant Go as Go Auth Service
 
     Client->>Go: POST /login (credentials)
     Go-->>Client: JWT
