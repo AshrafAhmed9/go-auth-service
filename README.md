@@ -31,14 +31,25 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 
 ## How the two services fit together
 
+Logging in only ever touches this service:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Go as Go Auth Service
+
+    Client->>Go: POST /login (credentials)
+    Go-->>Client: JWT
+```
+
+Every request after that only ever touches the Go service through Java, over gRPC, never directly:
+
 ```mermaid
 sequenceDiagram
     participant Client
     participant Java as Notes API (Spring Boot)
     participant Go as Go Auth Service
 
-    Client->>Go: POST /login (credentials)
-    Go-->>Client: JWT
     Client->>Java: request + JWT
     Java->>Go: ValidateToken (gRPC)
     Go-->>Java: user id, role
