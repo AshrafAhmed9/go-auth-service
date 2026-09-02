@@ -33,19 +33,27 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant Client
     participant Java as Notes API (Spring Boot)
     participant Go as Go Auth Service
 
+    rect rgb(235, 245, 255)
+    note over Client, Go: Phase 1 — log in, once per session
     Client->>Go: POST /login (credentials)
     Go-->>Client: JWT
+    end
+
+    rect rgb(245, 245, 245)
+    note over Client, Go: Phase 2 — repeats on every request after that
     Client->>Java: request + JWT
     Java->>Go: ValidateToken (gRPC)
     Go-->>Java: user id, role
     Java-->>Client: the requested notes
+    end
 ```
 
-Login is the only time the client talks to this service directly. Every request after that goes through Java, which calls this service over gRPC on the client's behalf.
+Login is the only time the client talks to this service directly, and it only happens once. Every request after that repeats the second box: the client never touches this service again, Java calls it over gRPC on the client's behalf, on every single request.
 
 Both sides share one `.proto` file, so the contract is enforced by the compiler, not by hope: rename a field here and the Java build fails before it ever reaches production. And the two services made opposite calls about what to do when a dependency dies, which is one of the better things to talk through: this service's rate limiter fails *open* to an in-memory fallback if Redis goes down, because a locked-out login system is worse than a temporarily weaker one. The Java service fails *closed*, 503, refuse the request, if it can't reach this service, because serving data it couldn't authorize is worse than an error. Same category of problem, opposite answer, because the cost of being wrong is different each time.
 
