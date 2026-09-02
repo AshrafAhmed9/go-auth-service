@@ -33,12 +33,12 @@ One atomic UPDATE. The database's row lock decides who wins a simultaneous race,
 
 ```mermaid
 flowchart LR
-    C1(["Client"]) -->|"1 . POST /login"| Go1["Go Auth Service"]
-    Go1 -->|"2 . JWT"| C2(["Client"])
-    C2 -->|"3 . request + JWT"| Java["Notes API\n(Spring Boot)"]
-    Java -->|"4 . ValidateToken\n(gRPC)"| Go2["Go Auth Service"]
-    Go2 -->|"5 . user id, role"| Java
-    Java -->|"6 . the requested notes"| C3(["Client"])
+    C1(["Client"]) -->|"1. POST /login"| Go1["Go Auth Service"]
+    Go1 -->|"2. JWT"| C2(["Client"])
+    C2 -->|"3. request + JWT"| Java["Notes API\n(Spring Boot)"]
+    Java -->|"4. ValidateToken\n(gRPC)"| Go2["Go Auth Service"]
+    Go2 -->|"5. user id, role"| Java
+    Java -->|"6. the requested notes"| C3(["Client"])
 ```
 
 Login only ever touches this service. Every request after that touches it only through Java, over gRPC, never directly from the client.
